@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -14,10 +14,11 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
 import { MeasureField } from '../components/common/MeasureField';
-import { STEP_FIELD_MAP, STEP_TYPES, type StepType } from '../types/procedure';
+import { STEP_FIELD_MAP, STEP_TYPES, type PrepProcedure, type StepType } from '../types/procedure';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
 import { makeSketchDataUrl, type PrepPhoto } from '../types/photo';
@@ -30,6 +31,7 @@ export default function ProcedureForm() {
   const addProcedure = useProcedureStore((s) => s.add);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const supplyLots = useSupplyStore((s) => s.items);
 
   const [specimenId, setSpecimenId] = useState(params.get('specimenId') ?? specimens[0]?.id ?? '');
   const [stepType, setStepType] = useState<StepType>('清修');
@@ -38,6 +40,8 @@ export default function ProcedureForm() {
   const [tools, setTools] = useState<string[]>([]);
   const [abrasive, setAbrasive] = useState('');
   const [adhesive, setAdhesive] = useState('');
+  const [adhesiveLotId, setAdhesiveLotId] = useState('');
+  const [adhesiveQty, setAdhesiveQty] = useState(1);
   const [adhesiveConc, setAdhesiveConc] = useState(5);
   const [durationMin, setDurationMin] = useState(60);
   const [tempC, setTempC] = useState(22);
@@ -52,6 +56,18 @@ export default function ProcedureForm() {
   const nextSeq = progress.list.length === 0 ? 1 : Math.max(...progress.list.map((it) => it.seq)) + 1;
 
   const specimen = useMemo(() => specimens.find((it) => it.id === specimenId), [specimens, specimenId]);
+  const adhesiveLots = useMemo(
+    () => (adhesive ? supplyLots.filter((lot) => lot.kind === '胶种' && lot.name === adhesive && lot.qty > 0) : []),
+    [supplyLots, adhesive],
+  );
+  const selectedAdhesiveLot = adhesiveLots.find((lot) => lot.id === adhesiveLotId);
+
+  useEffect(() => {
+    if (!adhesiveLots.some((lot) => lot.id === adhesiveLotId)) {
+      setAdhesiveLotId(adhesiveLots[0]?.id ?? '');
+      setAdhesiveQty(1);
+    }
+  }, [adhesive, adhesiveLotId, adhesiveLots]);
 
   const submit = async () => {
     if (!specimenId) {
@@ -79,25 +95,55 @@ export default function ProcedureForm() {
       setError('胶液浓度需在 0 ~ 100 % 之间');
       return;
     }
+    if (fieldMap.adhesives.length > 0 && adhesive) {
+      if (!adhesiveLotId) {
+        setError(`请选择「${adhesive}」的具体批号；当前没有可用批次`);
+        return;
+      }
+      if (!selectedAdhesiveLot) {
+        setError('所选批号已失效或库存不足，请重新选择批号');
+        return;
+      }
+      if (!Number.isFinite(adhesiveQty) || adhesiveQty <= 0) {
+        setError('实际用量必须大于 0');
+        return;
+      }
+      if (adhesiveQty > selectedAdhesiveLot.qty) {
+        setError(
+          `批号 ${selectedAdhesiveLot.lotNo} 库存不足：实际用量不能超过 ${selectedAdhesiveLot.qty} ${selectedAdhesiveLot.unit}`,
+        );
+        return;
+      }
+    }
 
-    const record = await addProcedure({
-      specimenId,
-      stepType,
-      nodeName: nodeName.trim(),
-      seq,
-      tools,
-      abrasive,
-      adhesive: fieldMap.adhesives.length > 0 ? adhesive : '',
-      adhesiveConc: fieldMap.needConc ? adhesiveConc : 0,
-      durationMin,
-      tempC,
-      rh,
-      photoBeforeIds: [],
-      photoAfterIds: [],
-      operator: operator.trim(),
-      startedAt: Date.now(),
-      state: 'pending',
-    });
+    let record: PrepProcedure;
+    try {
+      record = await addProcedure({
+        specimenId,
+        stepType,
+        nodeName: nodeName.trim(),
+        seq,
+        tools,
+        abrasive,
+        adhesive: fieldMap.adhesives.length > 0 ? adhesive : '',
+        adhesiveConc: fieldMap.needConc ? adhesiveConc : 0,
+        material:
+          fieldMap.adhesives.length > 0 && adhesive && selectedAdhesiveLot
+            ? { lotId: selectedAdhesiveLot.id, qty: adhesiveQty }
+            : null,
+        durationMin,
+        tempC,
+        rh,
+        photoBeforeIds: [],
+        photoAfterIds: [],
+        operator: operator.trim(),
+        startedAt: Date.now(),
+        state: 'pending',
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存节点失败');
+      return;
+    }
 
     if (withPhotos && specimen) {
       const before: PrepPhoto = {
@@ -118,7 +164,13 @@ export default function ProcedureForm() {
         dataUrl: makeSketchDataUrl(`修复后 · ${specimen.specimenNo}`, '#3f5a4a'),
         capturedAt: Date.now() + 1,
       };
-      await db.photos.bulkPut([before, after]);
+      try {
+        await db.photos.bulkPut([before, after]);
+      } catch (err) {
+        await useProcedureStore.getState().remove(record.id);
+        setError(err instanceof Error ? err.message : '留痕影像保存失败，已取消节点与材料扣减');
+        return;
+      }
     }
 
     setError('');
@@ -247,34 +299,81 @@ export default function ProcedureForm() {
             ) : null}
 
             {fieldMap.adhesives.length > 0 ? (
-              <Stack direction="row" spacing={1.5}>
-                <TextField
-                  select
-                  size="small"
-                  fullWidth
-                  label="胶种"
-                  value={adhesive}
-                  onChange={(e) => setAdhesive(e.target.value)}
-                >
-                  <MenuItem value="">未选定</MenuItem>
-                  {fieldMap.adhesives.map((a) => (
-                    <MenuItem key={a} value={a}>
-                      {a}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                {fieldMap.needConc ? (
+              <Stack spacing={1.5}>
+                <Stack direction="row" spacing={1.5}>
+                  <TextField
+                    select
+                    size="small"
+                    fullWidth
+                    label="胶种"
+                    value={adhesive}
+                    onChange={(e) => setAdhesive(e.target.value)}
+                  >
+                    <MenuItem value="">不使用胶种</MenuItem>
+                    {fieldMap.adhesives.map((a) => (
+                      <MenuItem key={a} value={a}>
+                        {a}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  {fieldMap.needConc ? (
+                    <Box sx={{ flex: 1 }}>
+                      <MeasureField
+                        label="胶液浓度"
+                        unit="%"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={adhesiveConc}
+                        onChange={setAdhesiveConc}
+                      />
+                    </Box>
+                  ) : null}
+                </Stack>
+                {adhesive ? (
+                  <>
+                    <Stack direction="row" spacing={1.5} alignItems="flex-start">
                   <Box sx={{ flex: 1 }}>
+                    <TextField
+                      select
+                      size="small"
+                      fullWidth
+                      label="领用批号"
+                      required
+                      value={adhesiveLotId}
+                      onChange={(e) => setAdhesiveLotId(e.target.value)}
+                      helperText={
+                        selectedAdhesiveLot
+                          ? `${selectedAdhesiveLot.spec} · 当前在库 ${selectedAdhesiveLot.qty} ${selectedAdhesiveLot.unit}`
+                          : `暂无可用的「${adhesive || '该胶种'}」批次，请先到材料台账登记`
+                      }
+                    >
+                      {adhesiveLots.map((lot) => (
+                        <MenuItem key={lot.id} value={lot.id}>
+                          {lot.lotNo} · 在库 {lot.qty} {lot.unit} · {lot.spec}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Box>
+                  <Box sx={{ width: 220 }}>
                     <MeasureField
-                      label="胶液浓度"
-                      unit="%"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      value={adhesiveConc}
-                      onChange={setAdhesiveConc}
+                      label="实际用量"
+                      unit={selectedAdhesiveLot?.unit ?? ''}
+                      min={0.001}
+                      max={selectedAdhesiveLot?.qty ?? 0}
+                      step={0.1}
+                      value={adhesiveQty}
+                      onChange={setAdhesiveQty}
+                      hint="保存节点时立即扣减该批号库存"
                     />
                   </Box>
+                </Stack>
+                {adhesiveLots.length === 0 ? (
+                  <Alert severity="warning">
+                    没有库存可用的「{adhesive}」批号，材料台账补充批次后才能保存本节点。
+                  </Alert>
+                ) : null}
+                  </>
                 ) : null}
               </Stack>
             ) : null}
@@ -334,12 +433,20 @@ export default function ProcedureForm() {
           <ProcedureTimeline
             items={progress.list}
             onFinish={async (pid) => {
-              await finish(pid);
-              setToast('节点已完成');
+              try {
+                await finish(pid);
+                setToast('节点已完成');
+              } catch (err) {
+                setError(err instanceof Error ? err.message : '完成节点失败');
+              }
             }}
             onRollback={async (pid) => {
-              await rollback(pid);
-              setToast('节点已回退');
+              try {
+                await rollback(pid);
+                setToast('节点已回退，材料已原路退回批号');
+              } catch (err) {
+                setError(err instanceof Error ? err.message : '回退节点失败');
+              }
             }}
           />
         </Paper>

@@ -36,6 +36,12 @@ const EMPTY_DRAFT: SupplyLotDraft = {
   lowThreshold: 2,
 };
 
+function fmtTraceTime(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** /supplies 工具材料台账：按种类分组、批号追溯、低量行高亮 */
 export default function SupplyList() {
   const lots = useSupplyStore((s) => s.items);
@@ -83,24 +89,28 @@ export default function SupplyList() {
 
   const submitIssue = async () => {
     if (!issueTarget) return;
-    if (issueQty <= 0 || issueQty > issueTarget.qty) {
-      setError(`领用数量需在 1 ~ ${issueTarget.qty} ${issueTarget.unit} 之间`);
+    if (!(issueQty > 0) || issueQty > issueTarget.qty) {
+      setError(`领用数量必须大于 0，且不能超过 ${issueTarget.qty} ${issueTarget.unit}`);
       return;
     }
     if (!issueOperator.trim()) {
       setError('领用人必填');
       return;
     }
-    await issue(issueTarget.id, {
-      qty: issueQty,
-      operator: issueOperator.trim(),
-      specimenNo: issueSpecimen || '未关联标本',
-    });
-    setIssueTarget(null);
-    setIssueQty(1);
-    setIssueOperator('');
-    setError('');
-    setToast('领用已登记');
+    try {
+      await issue(issueTarget.id, {
+        qty: issueQty,
+        operator: issueOperator.trim(),
+        specimenNo: issueSpecimen || '未关联标本',
+      });
+      setIssueTarget(null);
+      setIssueQty(1);
+      setIssueOperator('');
+      setError('');
+      setToast('领用已登记，库存已扣减');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '领用登记失败');
+    }
   };
 
   const lowCount = lots.filter(isLowStock).length;
@@ -199,9 +209,24 @@ export default function SupplyList() {
                         {left < 0 ? <Chip size="small" color="error" label={`已过期 ${-left} 天`} /> : `${left} 天`}
                       </TableCell>
                       <TableCell>
-                        {lot.issues.length === 0
-                          ? '—'
-                          : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
+                        {lot.issues.length === 0 ? (
+                          '—'
+                        ) : (
+                          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                            <Typography variant="body2">
+                              {lot.issues[0].operator} 领 {lot.issues[0].qty} {lot.unit}（
+                              {lot.issues[0].procedureId && lot.issues[0].procedureSeq
+                                ? `#${lot.issues[0].procedureSeq} ${lot.issues[0].nodeName ?? lot.issues[0].specimenNo}`
+                                : lot.issues[0].specimenNo}
+                              ）
+                            </Typography>
+                            <Chip
+                              size="small"
+                              color={lot.issues[0].status === 'returned' ? 'success' : 'primary'}
+                              label={lot.issues[0].status === 'returned' ? '已退回' : '已领用'}
+                            />
+                          </Stack>
+                        )}
                       </TableCell>
                       <TableCell align="right">
                         <Button
@@ -222,14 +247,24 @@ export default function SupplyList() {
               </TableBody>
             </Table>
           )}
-          {group.rows.some((r) => r.issues.length > 1) ? (
+          {group.rows.some((r) => r.issues.length > 0) ? (
             <Stack spacing={0.5} sx={{ mt: 1 }}>
               {group.rows
-                .filter((r) => r.issues.length > 1)
+                .filter((r) => r.issues.length > 0)
                 .map((r) => (
-                  <Typography key={r.id} variant="caption" color="text.secondary">
+                  <Typography key={r.id} variant="caption" color="text.secondary" data-testid={`supply-trace-${r.lotNo}`}>
                     批号 {r.lotNo} 的领用明细：
-                    {r.issues.map((i) => `${i.operator} ${i.qty}${r.unit}→${i.specimenNo}`).join('；')}
+                    {r.issues
+                      .map((i) => {
+                        const target = i.procedureId && i.procedureSeq
+                          ? `#${i.procedureSeq} ${i.nodeName ?? i.stepType ?? '工序'}（${i.specimenNo}）`
+                          : `手工领用（${i.specimenNo}）`;
+                        const status = i.status === 'returned'
+                          ? `，已退回${i.returnedAt ? ` ${fmtTraceTime(i.returnedAt)}` : ''}`
+                          : '';
+                        return `${fmtTraceTime(i.issuedAt)} ${i.operator} ${i.qty}${r.unit}→${target}${status}`;
+                      })
+                      .join('；')}
                   </Typography>
                 ))}
             </Stack>
@@ -349,9 +384,9 @@ export default function SupplyList() {
             <MeasureField
               label="领用数量"
               unit={issueTarget?.unit ?? '件'}
-              min={1}
-              max={issueTarget?.qty ?? 1}
-              step={1}
+              min={0.001}
+              max={issueTarget?.qty ?? 0}
+              step={0.1}
               value={issueQty}
               onChange={setIssueQty}
             />

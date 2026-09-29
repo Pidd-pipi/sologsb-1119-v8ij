@@ -32,6 +32,7 @@ export default function SpecimenDetail() {
   const rollback = useProcedureStore((s) => s.rollback);
   const progress = usePrepProgress(id);
   const [photos, setPhotos] = useState<PrepPhoto[]>([]);
+  const [error, setError] = useState('');
   const [toast, setToast] = useState('');
 
   const loadPhotos = useCallback(async () => {
@@ -81,6 +82,8 @@ export default function SpecimenDetail() {
           前后对照
         </Button>
       </Stack>
+
+      {error ? <Alert severity="error">{error}</Alert> : null}
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '380px 1fr' }, gap: 2 }}>
         <Stack spacing={1.5}>
@@ -135,12 +138,22 @@ export default function SpecimenDetail() {
             <ProcedureTimeline
               items={progress.list}
               onFinish={async (pid) => {
-                await finish(pid);
-                setToast('节点已完成');
+                try {
+                  await finish(pid);
+                  setError('');
+                  setToast('节点已完成');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '完成节点失败');
+                }
               }}
               onRollback={async (pid) => {
-                await rollback(pid);
-                setToast('节点已回退');
+                try {
+                  await rollback(pid);
+                  setError('');
+                  setToast('节点已回退，材料已原路退回批号');
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : '回退节点失败');
+                }
               }}
             />
           </Paper>

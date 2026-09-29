@@ -7,7 +7,7 @@ import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -54,6 +54,32 @@ class FossilPrepDB extends Dexie {
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
           });
       });
+    // v3：把具体材料批号、实际用量和工序节点绑定，支持库存扣减/退回追溯
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('procedures')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.materialUsage === undefined) row.materialUsage = null;
+          });
+        await tx
+          .table('supplies')
+          .toCollection()
+          .modify((row: any) => {
+            row.issues = (row.issues ?? []).map((issue: any) => ({
+              status: 'issued',
+              unit: row.unit,
+              ...issue,
+            }));
+          });
+      });
   }
 }
 
@@ -86,6 +112,9 @@ export async function ensureSeedData(): Promise<void> {
   const day = 24 * 3600 * 1000;
   const specimenId = newId('spm');
   const specimenId2 = newId('spm');
+  const adhesiveProcedureId = newId('prc');
+  const adhesiveLotId = newId('sup');
+  const adhesiveIssueId = newId('iss');
 
   const specimens: Specimen[] = [
     {
@@ -129,6 +158,7 @@ export async function ensureSeedData(): Promise<void> {
       abrasive: '800 目',
       adhesive: '',
       adhesiveConc: 0,
+      materialUsage: null,
       durationMin: 145,
       tempC: 22,
       rh: 48,
@@ -140,7 +170,7 @@ export async function ensureSeedData(): Promise<void> {
       finishedAt: now - 10 * day + 145 * 60000,
     },
     {
-      id: newId('prc'),
+      id: adhesiveProcedureId,
       specimenId,
       stepType: '加固',
       nodeName: '围岩裂隙渗透加固',
@@ -149,6 +179,16 @@ export async function ensureSeedData(): Promise<void> {
       abrasive: '',
       adhesive: 'Paraloid B-72',
       adhesiveConc: 5,
+      materialUsage: {
+        lotId: adhesiveLotId,
+        lotNo: 'B72-20240312',
+        materialName: 'Paraloid B-72',
+        kind: '胶种',
+        qty: 1,
+        unit: '瓶',
+        issueId: adhesiveIssueId,
+        issuedAt: now - 6 * day,
+      },
       durationMin: 90,
       tempC: 23,
       rh: 45,
@@ -185,23 +225,30 @@ export async function ensureSeedData(): Promise<void> {
 
   const supplies: SupplyLot[] = [
     {
-      id: newId('sup'),
+      id: adhesiveLotId,
       name: 'Paraloid B-72',
       kind: '胶种',
       spec: '分析纯 500 g',
       lotNo: 'B72-20240312',
-      qty: 4,
+      qty: 3,
       unit: '瓶',
       openedAt: now - 40 * day,
       shelfLifeMonths: 36,
       lowThreshold: 2,
       issues: [
         {
-          id: newId('iss'),
+          id: adhesiveIssueId,
           qty: 1,
+          unit: '瓶',
           operator: '林砚秋',
           specimenNo: 'FP-2024-0031',
+          specimenId,
           issuedAt: now - 6 * day,
+          status: 'issued',
+          procedureId: adhesiveProcedureId,
+          procedureSeq: 2,
+          nodeName: '围岩裂隙渗透加固',
+          stepType: '加固',
         },
       ],
     },

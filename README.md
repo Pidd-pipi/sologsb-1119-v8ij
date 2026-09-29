@@ -71,7 +71,7 @@ sologsb-1119/
 | --- | --- | --- |
 | `/specimens` | 标本台账：按号/分类/产地/状态筛选，状态分栏 | Specimen |
 | `/specimens/:id` | 标本详情 + 工序时间线 + 影像留痕 | Specimen、PrepProcedure、PrepPhoto |
-| `/procedures/new` | 新建工序节点：按类型动态出工具/磨料/胶种字段，序号跳号报错 | PrepProcedure、Specimen |
+| `/procedures/new` | 新建工序节点：按类型动态出工具/磨料/胶种字段，胶种绑定批号和实际用量，序号跳号报错 | PrepProcedure、Specimen、SupplyLot |
 | `/supplies` | 工具材料台账：按种类分组、批号追溯、低量高亮、领用登记 | SupplyLot |
 | `/compare/:specimenId` | 前后对照滑块联看 + 导出对照说明文本 | PrepPhoto、PrepProcedure |
 
@@ -79,9 +79,10 @@ sologsb-1119/
 
 ## 数据存储说明
 
-- 数据库名 `gbfossilprep`，当前结构版本 **v2**（`localStorage['gbfossilprep:db-version']` 记录）。
-- 四张表：`specimens`（标本）、`procedures`（修复工序）、`supplies`（工具材料批次 + 领用记录）、`photos`（修复影像 dataUrl 独立表）。
+- 数据库名 `gbfossilprep`，当前结构版本 **v3**（`localStorage['gbfossilprep:db-version']` 记录）。
+- 四张表：`specimens`（标本）、`procedures`（修复工序，保存具体批号与实际用量快照）、`supplies`（工具材料批次 + 领用/退库记录）、`photos`（修复影像 dataUrl 独立表）。
 - v1 → v2 迁移：为老数据补齐 `state`、`tools`、`photoBeforeIds/AfterIds`、`issues`、`lowThreshold` 字段并新增索引。
+- v2 → v3 迁移：为工序补齐 `materialUsage`，为既有领用记录补齐 `status` / `unit`；新节点保存时在同一事务内扣减库存，回退时原位标记退回并恢复库存。
 - 容器无状态、不挂载命名卷；换浏览器或清空站点数据即回到初始示范数据。
 - 首次打开会灌入 2 件示范标本、2 个工序节点、4 个材料批次与 2 张留痕影像，便于直接查看。
 
@@ -89,6 +90,9 @@ sologsb-1119/
 
 - **工序序号不跳号**：新建节点时若序号大于「当前最大序号 + 1」直接报错并给出建议序号。
 - **工序回退**：已完成节点可回退，回退后计入待办与回退计数。
+- **批号工序联动**：录入使用胶种的节点时必须选择具体批号并填写实际用量；保存节点与库存扣减、领用记录在同一 IndexedDB 事务内完成。
+- **库存不足拦截**：前端显示当前在库，提交时再次按数据库批次数量校验；不足则节点和台账都不会落库。
+- **回退原路退料**：已完成节点回退后，原批号库存按原数量恢复，原领用记录原位标注「已退回」和退回时间，工序快照同步记录退回时间。
+- **批号追溯**：按批号片段检索，行内展示该批次对应标本、工序序号/节点、领用人、用量以及领用或退回状态。
 - **低量高亮**：在库 ≤ 低量阈值的批次整行高亮并标注「低量」，剩余保质期为负时红色标注。
-- **批号追溯**：按批号片段检索，行内直接展示该批次的领用明细。
 - **前后对照**：滑块拖动联看修复前后影像，支持缩放与标注泡点，可导出/复制对照说明文本。

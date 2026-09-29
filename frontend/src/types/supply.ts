@@ -3,6 +3,9 @@ export type SupplyKind = '工具' | '磨料' | '胶种' | '耗材';
 
 export const SUPPLY_KINDS: SupplyKind[] = ['工具', '磨料', '胶种', '耗材'];
 
+/** 领用记录状态 */
+export type SupplyIssueStatus = 'issued' | 'returned';
+
 /** 工具材料批次 */
 export interface SupplyLot {
   id: string;
@@ -21,17 +24,26 @@ export interface SupplyLot {
   shelfLifeMonths: number;
   /** 低量阈值 */
   lowThreshold: number;
-  /** 最近一次领用记录 */
+  /** 领用 / 退库记录 */
   issues: SupplyIssue[];
 }
 
-/** 领用登记 */
+/** 领用登记。工序保存时生成 issued；节点回退时原位标记为 returned。 */
 export interface SupplyIssue {
   id: string;
   qty: number;
+  unit: string;
   operator: string;
   specimenNo: string;
+  specimenId?: string;
   issuedAt: number;
+  status: SupplyIssueStatus;
+  returnedAt?: number;
+  /** 关联工序，手工领用可为空 */
+  procedureId?: string;
+  procedureSeq?: number;
+  nodeName?: string;
+  stepType?: string;
 }
 
 export type SupplyLotDraft = Omit<SupplyLot, 'id' | 'issues'>;

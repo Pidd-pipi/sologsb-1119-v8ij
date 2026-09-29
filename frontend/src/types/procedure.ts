@@ -1,4 +1,6 @@
 /** 工序类型 */
+import type { SupplyKind } from './supply';
+
 export type StepType = '清修' | '加固' | '粘接' | '补配' | '翻模';
 
 export const STEP_TYPES: StepType[] = ['清修', '加固', '粘接', '补配', '翻模'];
@@ -43,6 +45,19 @@ export const STEP_FIELD_MAP: Record<
 /** 工序节点状态 */
 export type ProcedureState = 'pending' | 'done' | 'rolledback';
 
+/** 工序占用的具体材料批次 */
+export interface ProcedureMaterialUsage {
+  lotId: string;
+  lotNo: string;
+  materialName: string;
+  kind: SupplyKind;
+  qty: number;
+  unit: string;
+  issueId: string;
+  issuedAt: number;
+  returnedAt?: number;
+}
+
 /** 修复工序 */
 export interface PrepProcedure {
   id: string;
@@ -60,6 +75,8 @@ export interface PrepProcedure {
   adhesive: string;
   /** 胶液浓度 % */
   adhesiveConc: number;
+  /** 胶种实际领用批次与用量 */
+  materialUsage: ProcedureMaterialUsage | null;
   /** 耗时 min */
   durationMin: number;
   /** 环境温度 ℃ */
@@ -74,4 +91,11 @@ export interface PrepProcedure {
   finishedAt?: number;
 }
 
-export type PrepProcedureDraft = Omit<PrepProcedure, 'id'>;
+export interface ProcedureMaterialRequest {
+  lotId: string;
+  qty: number;
+}
+
+export type PrepProcedureDraft = Omit<PrepProcedure, 'id' | 'materialUsage'> & {
+  material?: ProcedureMaterialRequest | null;
+};
