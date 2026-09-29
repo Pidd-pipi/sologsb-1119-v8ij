@@ -106,6 +106,22 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     胶种：{node.adhesive || '—'}
                     {node.adhesiveConc > 0 ? `（浓度 ${node.adhesiveConc} %）` : ''}
                   </Typography>
+                  {node.supplyLotId ? (
+                    <Typography variant="body2" data-testid={`node-supply-${node.id}`}>
+                      材料批号：{node.supplyLotNo} · 实领 {node.supplyUseQty}
+                      {node.state === 'rolledback' ? (
+                        <Chip
+                          size="small"
+                          color="success"
+                          variant="outlined"
+                          label="占用材料已退回批号"
+                          sx={{ ml: 0.5 }}
+                        />
+                      ) : (
+                        <Chip size="small" variant="outlined" label="已扣减台账" sx={{ ml: 0.5 }} />
+                      )}
+                    </Typography>
+                  ) : null}
                   <Typography variant="body2">
                     环境：{node.tempC} ℃ / RH {node.rh} %
                   </Typography>

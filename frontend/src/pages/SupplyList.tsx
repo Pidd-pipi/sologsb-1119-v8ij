@@ -22,7 +22,23 @@ import AddIcon from '@mui/icons-material/Add';
 import { useSupplyStore } from '../stores/supplyStore';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { MeasureField } from '../components/common/MeasureField';
-import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft } from '../types/supply';
+import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft, type SupplyIssue } from '../types/supply';
+
+function fmtDate(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** 单笔领用追溯文案：谁、领多少、用在哪个标本的哪道工序、是否已退回 */
+function issueLine(issue: SupplyIssue, unit: string): string {
+  const target = issue.procedureId
+    ? `${issue.specimenNo} / ${issue.nodeName ?? '工序节点'}`
+    : issue.specimenNo;
+  const returned = issue.returnedAt !== undefined ? `（已于 ${fmtDate(issue.returnedAt)} 退回）` : '';
+  return `${issue.operator} 领 ${issue.qty} ${unit} → ${target}${returned}`;
+}
 
 const EMPTY_DRAFT: SupplyLotDraft = {
   name: '',
@@ -91,11 +107,16 @@ export default function SupplyList() {
       setError('领用人必填');
       return;
     }
-    await issue(issueTarget.id, {
-      qty: issueQty,
-      operator: issueOperator.trim(),
-      specimenNo: issueSpecimen || '未关联标本',
-    });
+    try {
+      await issue(issueTarget.id, {
+        qty: issueQty,
+        operator: issueOperator.trim(),
+        specimenNo: issueSpecimen || '未关联标本',
+      });
+    } catch {
+      setError(`批号 ${issueTarget.lotNo} 库存不足，领用已阻止`);
+      return;
+    }
     setIssueTarget(null);
     setIssueQty(1);
     setIssueOperator('');
@@ -199,9 +220,20 @@ export default function SupplyList() {
                         {left < 0 ? <Chip size="small" color="error" label={`已过期 ${-left} 天`} /> : `${left} 天`}
                       </TableCell>
                       <TableCell>
-                        {lot.issues.length === 0
-                          ? '—'
-                          : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
+                        {lot.issues.length === 0 ? (
+                          '—'
+                        ) : (
+                          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
+                            <Typography variant="body2">
+                              {`${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${
+                                lot.issues[0].procedureId ? `${lot.issues[0].specimenNo} · ${lot.issues[0].nodeName ?? '工序'}` : lot.issues[0].specimenNo
+                              }）`}
+                            </Typography>
+                            {lot.issues[0].returnedAt !== undefined ? (
+                              <Chip size="small" color="success" variant="outlined" label="已退回" />
+                            ) : null}
+                          </Stack>
+                        )}
                       </TableCell>
                       <TableCell align="right">
                         <Button
@@ -222,15 +254,26 @@ export default function SupplyList() {
               </TableBody>
             </Table>
           )}
-          {group.rows.some((r) => r.issues.length > 1) ? (
+          {group.rows.some((r) => r.issues.length > 0) ? (
             <Stack spacing={0.5} sx={{ mt: 1 }}>
               {group.rows
-                .filter((r) => r.issues.length > 1)
+                .filter((r) => r.issues.length > 0)
                 .map((r) => (
-                  <Typography key={r.id} variant="caption" color="text.secondary">
-                    批号 {r.lotNo} 的领用明细：
-                    {r.issues.map((i) => `${i.operator} ${i.qty}${r.unit}→${i.specimenNo}`).join('；')}
-                  </Typography>
+                  <Stack key={r.id} spacing={0.25} data-testid={`trace-${r.lotNo}`}>
+                    <Typography variant="caption" fontWeight={700} color="text.secondary">
+                      批号 {r.lotNo} 的领用追溯（{r.issues.length} 笔）：
+                    </Typography>
+                    {r.issues.map((i) => (
+                      <Typography
+                        key={i.id}
+                        variant="caption"
+                        color={i.returnedAt !== undefined ? 'success.main' : 'text.secondary'}
+                        sx={{ textDecoration: i.returnedAt !== undefined ? 'none' : undefined }}
+                      >
+                        · {issueLine(i, r.unit)}
+                      </Typography>
+                    ))}
+                  </Stack>
                 ))}
             </Stack>
           ) : null}

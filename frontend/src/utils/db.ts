@@ -7,7 +7,7 @@ import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -54,6 +54,26 @@ class FossilPrepDB extends Dexie {
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
           });
       });
+    // v3：工序节点关联材料批号与实际用量，领用记录可关联工序并标记退回
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+      })
+      .upgrade(async (tx) => {
+        // 老记录没有材料关联字段，保持 undefined 即「未领用材料」；
+        // 历史领用记录无退回标记，undefined 即「未退回」，无需补齐。
+        await tx
+          .table('procedures')
+          .toCollection()
+          .modify((row: any) => {
+            if (row.supplyLotId === undefined) row.supplyLotId = '';
+            if (row.supplyLotNo === undefined) row.supplyLotNo = '';
+            if (row.supplyUseQty === undefined) row.supplyUseQty = 0;
+          });
+      });
   }
 }
 
@@ -86,6 +106,9 @@ export async function ensureSeedData(): Promise<void> {
   const day = 24 * 3600 * 1000;
   const specimenId = newId('spm');
   const specimenId2 = newId('spm');
+  const procedureId2 = newId('prc');
+  const seedB72LotId = newId('sup');
+  const seedIssueId = newId('iss');
 
   const specimens: Specimen[] = [
     {
@@ -140,7 +163,7 @@ export async function ensureSeedData(): Promise<void> {
       finishedAt: now - 10 * day + 145 * 60000,
     },
     {
-      id: newId('prc'),
+      id: procedureId2,
       specimenId,
       stepType: '加固',
       nodeName: '围岩裂隙渗透加固',
@@ -149,6 +172,8 @@ export async function ensureSeedData(): Promise<void> {
       abrasive: '',
       adhesive: 'Paraloid B-72',
       adhesiveConc: 5,
+      supplyLotNo: 'B72-20240312',
+      supplyUseQty: 1,
       durationMin: 90,
       tempC: 23,
       rh: 45,
@@ -182,10 +207,12 @@ export async function ensureSeedData(): Promise<void> {
   ];
   procedures[0].photoBeforeIds = [photos[0].id];
   procedures[0].photoAfterIds = [photos[1].id];
+  // 加固节点占用 B-72 批号 1 瓶（台账已扣减，领用记录指向该工序）
+  procedures[1].supplyLotId = seedB72LotId;
 
   const supplies: SupplyLot[] = [
     {
-      id: newId('sup'),
+      id: seedB72LotId,
       name: 'Paraloid B-72',
       kind: '胶种',
       spec: '分析纯 500 g',
@@ -197,11 +224,13 @@ export async function ensureSeedData(): Promise<void> {
       lowThreshold: 2,
       issues: [
         {
-          id: newId('iss'),
+          id: seedIssueId,
           qty: 1,
           operator: '林砚秋',
           specimenNo: 'FP-2024-0031',
           issuedAt: now - 6 * day,
+          procedureId: procedureId2,
+          nodeName: '围岩裂隙渗透加固',
         },
       ],
     },

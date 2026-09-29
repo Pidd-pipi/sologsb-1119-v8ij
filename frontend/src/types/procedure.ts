@@ -60,6 +60,12 @@ export interface PrepProcedure {
   adhesive: string;
   /** 胶液浓度 % */
   adhesiveConc: number;
+  /** 领用材料批号所在批次（材料台账 SupplyLot 主键），未领用材料时为空 */
+  supplyLotId?: string;
+  /** 领用批号（冗余存储，批号删除/变更后仍可追溯） */
+  supplyLotNo?: string;
+  /** 实际用量（按批号单位计） */
+  supplyUseQty?: number;
   /** 耗时 min */
   durationMin: number;
   /** 环境温度 ℃ */

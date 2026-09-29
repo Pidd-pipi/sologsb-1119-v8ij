@@ -21,7 +21,7 @@ export interface SupplyLot {
   shelfLifeMonths: number;
   /** 低量阈值 */
   lowThreshold: number;
-  /** 最近一次领用记录 */
+  /** 领用记录（工序占用及退回均留痕于此） */
   issues: SupplyIssue[];
 }
 
@@ -32,6 +32,12 @@ export interface SupplyIssue {
   operator: string;
   specimenNo: string;
   issuedAt: number;
+  /** 关联的工序节点（手动领用可不关联） */
+  procedureId?: string;
+  /** 关联工序节点名称，便于批号追溯直接定位用在哪道工序 */
+  nodeName?: string;
+  /** 退回时间：有值表示该笔领用已随节点回退原样退回批号 */
+  returnedAt?: number;
 }
 
 export type SupplyLotDraft = Omit<SupplyLot, 'id' | 'issues'>;
@@ -39,6 +45,11 @@ export type SupplyLotDraft = Omit<SupplyLot, 'id' | 'issues'>;
 /** 是否低量 */
 export function isLowStock(lot: SupplyLot): boolean {
   return lot.qty <= lot.lowThreshold;
+}
+
+/** 该笔领用是否已退回 */
+export function isIssueReturned(issue: SupplyIssue): boolean {
+  return issue.returnedAt !== undefined;
 }
 
 /** 剩余保质期天数（负数表示已过期） */

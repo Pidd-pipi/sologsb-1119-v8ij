@@ -29,10 +29,15 @@ export const useSupplyStore = create<SupplyState>((set, get) => ({
   async issue(id, payload) {
     const target = get().items.find((it) => it.id === id);
     if (!target) return;
+    if (payload.qty <= 0) return;
+    // 数量不够时不动台账，交由调用方提示
+    if (target.qty < payload.qty) {
+      throw new Error(`批号 ${target.lotNo} 在库 ${target.qty} ${target.unit}，不足领用 ${payload.qty} ${target.unit}`);
+    }
     const issue: SupplyIssue = { ...payload, id: newId('iss'), issuedAt: Date.now() };
     const next: SupplyLot = {
       ...target,
-      qty: Math.max(0, target.qty - payload.qty),
+      qty: target.qty - payload.qty,
       issues: [issue, ...target.issues],
     };
     await db.supplies.put(next);

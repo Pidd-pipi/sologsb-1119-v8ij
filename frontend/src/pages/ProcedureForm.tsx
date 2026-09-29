@@ -13,7 +13,8 @@ import Snackbar from '@mui/material/Snackbar';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import { useSpecimenStore } from '../stores/specimenStore';
-import { useProcedureStore } from '../stores/procedureStore';
+import { useProcedureStore, StockShortageError } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
 import { MeasureField } from '../components/common/MeasureField';
@@ -27,6 +28,7 @@ export default function ProcedureForm() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const specimens = useSpecimenStore((s) => s.items);
+  const supplyLots = useSupplyStore((s) => s.items);
   const addProcedure = useProcedureStore((s) => s.add);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
@@ -38,6 +40,8 @@ export default function ProcedureForm() {
   const [tools, setTools] = useState<string[]>([]);
   const [abrasive, setAbrasive] = useState('');
   const [adhesive, setAdhesive] = useState('');
+  const [supplyLotId, setSupplyLotId] = useState('');
+  const [supplyUseQty, setSupplyUseQty] = useState(1);
   const [adhesiveConc, setAdhesiveConc] = useState(5);
   const [durationMin, setDurationMin] = useState(60);
   const [tempC, setTempC] = useState(22);
@@ -50,6 +54,16 @@ export default function ProcedureForm() {
   const progress = usePrepProgress(specimenId || undefined);
   const fieldMap = STEP_FIELD_MAP[stepType];
   const nextSeq = progress.list.length === 0 ? 1 : Math.max(...progress.list.map((it) => it.seq)) + 1;
+
+  // 该工序类型可用的胶种批号（台账中实际有货的批次）
+  const adhesiveLots = useMemo(
+    () => supplyLots.filter((lot) => lot.kind === '胶种' && fieldMap.adhesives.includes(lot.name)),
+    [supplyLots, fieldMap],
+  );
+  const selectedLot = useMemo(
+    () => adhesiveLots.find((lot) => lot.id === supplyLotId),
+    [adhesiveLots, supplyLotId],
+  );
 
   const specimen = useMemo(() => specimens.find((it) => it.id === specimenId), [specimens, specimenId]);
 
@@ -79,25 +93,64 @@ export default function ProcedureForm() {
       setError('胶液浓度需在 0 ~ 100 % 之间');
       return;
     }
+    if (fieldMap.adhesives.length > 0) {
+      if (!supplyLotId) {
+        setError('该工序需使用胶种，请选择具体批号（确无领用请改选「不领用胶种」）');
+        return;
+      }
+      if (supplyLotId !== 'none') {
+        if (!Number.isFinite(supplyUseQty) || supplyUseQty <= 0) {
+          setError('实际用量必须大于 0');
+          return;
+        }
+        const lot = supplyLots.find((it) => it.id === supplyLotId);
+        if (!lot) {
+          setError('所选批号不存在，请重新选择');
+          return;
+        }
+        if (supplyUseQty > lot.qty) {
+          setError(`批号 ${lot.lotNo} 现存仅 ${lot.qty} ${lot.unit}，不足本次用量 ${supplyUseQty} ${lot.unit}，已阻止保存`);
+          return;
+        }
+      }
+    }
 
-    const record = await addProcedure({
-      specimenId,
-      stepType,
-      nodeName: nodeName.trim(),
-      seq,
-      tools,
-      abrasive,
-      adhesive: fieldMap.adhesives.length > 0 ? adhesive : '',
-      adhesiveConc: fieldMap.needConc ? adhesiveConc : 0,
-      durationMin,
-      tempC,
-      rh,
-      photoBeforeIds: [],
-      photoAfterIds: [],
-      operator: operator.trim(),
-      startedAt: Date.now(),
-      state: 'pending',
-    });
+    const useLot = supplyLotId !== 'none' && fieldMap.adhesives.length > 0
+      ? supplyLots.find((it) => it.id === supplyLotId)
+      : undefined;
+
+    let record;
+    try {
+      record = await addProcedure({
+        specimenId,
+        stepType,
+        nodeName: nodeName.trim(),
+        seq,
+        tools,
+        abrasive,
+        adhesive: fieldMap.adhesives.length > 0 ? (useLot?.name ?? adhesive) : '',
+        adhesiveConc: fieldMap.needConc ? adhesiveConc : 0,
+        supplyLotId: useLot?.id ?? '',
+        supplyLotNo: useLot?.lotNo ?? '',
+        supplyUseQty: useLot ? supplyUseQty : 0,
+        durationMin,
+        tempC,
+        rh,
+        photoBeforeIds: [],
+        photoAfterIds: [],
+        operator: operator.trim(),
+        startedAt: Date.now(),
+        state: 'pending',
+      });
+    } catch (err) {
+      // 事务内最后一刻发现库存不足（例如多标签页并发），同样当场阻止保存
+      if (err instanceof StockShortageError) {
+        setError(`${err.message}，已阻止保存，请核实现场用量或更换批号`);
+        return;
+      }
+      setError('节点保存失败，请重试');
+      return;
+    }
 
     if (withPhotos && specimen) {
       const before: PrepPhoto = {
@@ -122,9 +175,15 @@ export default function ProcedureForm() {
     }
 
     setError('');
-    setToast(`已追加工序节点 #${seq} ${stepType} · ${record.nodeName}`);
+    setToast(
+      useLot
+        ? `已追加工序节点 #${seq} ${stepType} · ${record.nodeName}，批号 ${useLot.lotNo} 扣减 ${supplyUseQty} ${useLot.unit}`
+        : `已追加工序节点 #${seq} ${stepType} · ${record.nodeName}`,
+    );
     setNodeName('');
     setTools([]);
+    setSupplyLotId('');
+    setSupplyUseQty(1);
     setSeq(nextSeq + 1);
   };
 
@@ -176,6 +235,8 @@ export default function ProcedureForm() {
                   setTools([]);
                   setAbrasive('');
                   setAdhesive('');
+                  setSupplyLotId('');
+                  setSupplyUseQty(1);
                 }}
               >
                 {STEP_TYPES.map((t) => (
@@ -247,34 +308,65 @@ export default function ProcedureForm() {
             ) : null}
 
             {fieldMap.adhesives.length > 0 ? (
-              <Stack direction="row" spacing={1.5}>
-                <TextField
-                  select
-                  size="small"
-                  fullWidth
-                  label="胶种"
-                  value={adhesive}
-                  onChange={(e) => setAdhesive(e.target.value)}
-                >
-                  <MenuItem value="">未选定</MenuItem>
-                  {fieldMap.adhesives.map((a) => (
-                    <MenuItem key={a} value={a}>
-                      {a}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                {fieldMap.needConc ? (
-                  <Box sx={{ flex: 1 }}>
-                    <MeasureField
-                      label="胶液浓度"
-                      unit="%"
-                      min={0}
-                      max={100}
-                      step={0.5}
-                      value={adhesiveConc}
-                      onChange={setAdhesiveConc}
-                    />
-                  </Box>
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={1.5}>
+                  <TextField
+                    select
+                    size="small"
+                    fullWidth
+                    label="胶种批号（保存时按批号扣减台账）"
+                    value={supplyLotId}
+                    onChange={(e) => {
+                      setSupplyLotId(e.target.value);
+                      setSupplyUseQty(1);
+                    }}
+                  >
+                    <MenuItem value="">请选择批号</MenuItem>
+                    <MenuItem value="none">不领用胶种（本节点不扣减库存）</MenuItem>
+                    {adhesiveLots.map((lot) => (
+                      <MenuItem key={lot.id} value={lot.id} disabled={lot.qty <= 0}>
+                        {lot.name} · {lot.lotNo} · 现存 {lot.qty} {lot.unit}
+                        {lot.qty <= 0 ? '（无库存）' : ''}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                  {selectedLot ? (
+                    <Box sx={{ width: 180 }}>
+                      <MeasureField
+                        label="实际用量"
+                        unit={selectedLot.unit}
+                        min={1}
+                        max={selectedLot.qty}
+                        step={1}
+                        value={supplyUseQty}
+                        onChange={setSupplyUseQty}
+                        hint={`批号现存 ${selectedLot.qty} ${selectedLot.unit}，不足将阻止保存`}
+                      />
+                    </Box>
+                  ) : null}
+                  {fieldMap.needConc ? (
+                    <Box sx={{ width: 180 }}>
+                      <MeasureField
+                        label="胶液浓度"
+                        unit="%"
+                        min={0}
+                        max={100}
+                        step={0.5}
+                        value={adhesiveConc}
+                        onChange={setAdhesiveConc}
+                      />
+                    </Box>
+                  ) : null}
+                </Stack>
+                {adhesiveLots.length === 0 ? (
+                  <Alert severity="warning" data-testid="no-adhesive-lot">
+                    台账中没有该工序可选的胶种批号，请到「材料台账」登记批次后再保存；如本节点确不领料请选择「不领用胶种」。
+                  </Alert>
+                ) : selectedLot ? (
+                  <Typography variant="caption" color="text.secondary">
+                    领用后将在批号 {selectedLot.lotNo} 上扣减 {supplyUseQty || 0} {selectedLot.unit}
+                    并留下指向本节点 #{seq} 的领用记录；节点回退时原样退回该批号。
+                  </Typography>
                 ) : null}
               </Stack>
             ) : null}
